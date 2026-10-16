@@ -1,0 +1,744 @@
+---
+title: "Final Project MATH-342 Statistical Machine Learning"
+author: "Sam Schneider and Sophia Maron Schaeffer"
+format: pdf
+---
+
+```{r include=FALSE}
+#| warning: FALSE
+# loading all required packages
+library(tidyverse)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(gbm)
+library(glmnet)
+library(broom)
+library(factoextra)
+library(dendextend)
+library(usethis)
+library(readxl)
+library(janitor)
+library(gt)
+library(ggrepel)
+```
+
+```{r include=FALSE}
+# putting the data in and removing empty rows
+data <- read_csv("Dataset - Training Data (2022-2024).csv")
+test2025 <- read_csv("Dataset - Test Data (2025).csv")
+```
+
+```{r include=FALSE}
+# Creating the NumberOfTeams variable
+data <- data %>% mutate(
+  NumberOfTeams = case_when(
+    NumberOfTeams == "2 Tms" ~ 2,
+    NumberOfTeams == "3 Tms" ~ 3,
+    NumberOfTeams == "4 Tms" ~ 4,
+    NumberOfTeams == "5 Tms" ~ 5,
+    .default = 1
+  )
+)
+
+test2025 <- test2025 %>% mutate(
+  NumberOfTeams = case_when(
+    NumberOfTeams == "2 Tms" ~ 2,
+    NumberOfTeams == "3 Tms" ~ 3,
+    NumberOfTeams == "4 Tms" ~ 4,
+    NumberOfTeams == "5 Tms" ~ 5,
+    .default = 1
+  )
+)
+
+# only keep pitch columns that exist in the training dataset
+pitches <- c("FB", "SL", "CT", "CB", "CH", "SF")
+
+# creating Position, pitch_count, Throws, and TommyJohn variables
+data <- data %>%
+  mutate(
+    Position = ifelse(GS / G >= 0.5, 1, 0),
+    pitch_count = rowSums(across(all_of(pitches), ~ . > 0.05)),
+    Throws = ifelse(Throws == "R", 1, 0),
+    TommyJohn = ifelse(TommyJohn == "Yes", 1, 0)
+  )
+
+test2025 <- test2025 %>%
+  mutate(
+    Position = ifelse(GS / G >= 0.5, 1, 0),
+    pitch_count = rowSums(across(all_of(pitches), ~ . > 0.05)),
+    Throws = ifelse(Throws == "R", 1, 0),
+    TommyJohn = ifelse(TommyJohn == "Yes", 1, 0)
+  )
+```
+
+# Abstract
+
+Fielding Independent Pitching (FIP) is a widely used sabermetric for measuring pitching effectiveness in Major League Baseball (MLB). The primary goal of this study is to accurately predict FIP scores using player statistics that do not factor into its calculation. Data collected from FanGraphs from 2022-2024 consisted of 302 pitchers, with 174 pitchers from 2025 used as a held-out test set. LASSO regression and Random Forest models were applied to assess predictive accuracy and identify influential features. An ensemble approach produced the overall lowest mean squared error, demonstrating superior predictive performance.
+
+Clustering and principal components analysis (PCA) on six pitch types further explored the relationship between pitch-mix combinations and FIP. Most pitchers had three to four pitches, but pitch arsenal alone was not a strong predictor of FIP. Clustering showed that relievers tend to rely on fewer pitches and exhibit higher strikeout (K) and walk (BB) rates than starters. PCA revealed correlations between fastballs and sliders, with smaller arsenals of these pitches associated with lower FIP scores.
+
+These results suggest that a pitcher’s effectiveness cannot be determined by a single statistic or by their pitch arsenal. Instead, physical features and combinations of pitches together may provide scouts and recruiters information to better evaluate pitchers, even those who have not yet played in the major leagues.
+
+# **Motivation**
+
+In baseball, professional teams increasingly rely on advanced statistics to maximize their success in predicting the performances of pitchers. \[1\] Traditional metrics like Earned Run Average (ERA) have been improved over recent years, aiming to measure effectiveness more accurately. The development and analysis of advanced baseball metrics is known as sabermetrics.
+
+\
+Fielding Independent Pitching, or FIP, is one of the more commonly used advanced pitching statistics today, and the most popular form of a wider range of sabermetrics called Defense-Independent Pitching Stats, or DIPS. The DIPS theory originated in the late 1990s by sabermatrician Voros McCracken, who hypothesized that pitchers had virtually no impact on how balls in play were fielded or became hits. \[2\] Under this assumption, McCracken produced a new measurement in which the pitcher’s performance is based solely on the actions that he can control (strikeouts, home runs, hit-by-pitches, and walks). These metrics are then weighted to present FIP on an identical scale to ERA.
+
+# Introduction
+
+### **Research Question**
+
+Our project examines two different approaches to understanding pitcher effectiveness using baseball statistics. 
+
+1.  Which ML techniques best predict a pitcher’s next-season FIP score using only the previous three years of statistics?
+
+2.  Which pitch-mix combinations are associated with the lowest FIP scores, and which clusters of pitchers emerge from their pitch-type usage?
+
+In addition to pitcher efficacy, we explore the balance between traditional statistics and sabermetrics. We hypothesize that previous statistics will hold less power over newer and more advanced metrics in predicting future pitcher performance.
+
+# Methods
+
+### **Data Collection**
+
+The dataset used for this research was obtained from FanGraphs, which compiles official MLB game records and advanced metrics generated through companies such as Baseball Information Solutions. FanGraphs provides only limited public APIs, so we used web scraping tools to extract a comprehensive dataset of individual player statistics.
+
+Our training dataset includes 302 pitchers from 2022-2024, with 31 variables covering general performance metrics and pitch characteristics. We removed pitchers who averaged fewer than 50 innings over the three seasons and dropped variables with over 50% missing data. 
+
+Our held-out test set contains 174 pitchers who threw at least 50 innings in the 2025 regular season, many of whom also appeared in the training data.
+
+### **Methods of Analysis**
+
+We began with exploratory data analysis to understand the dataset, using correlation matrices, histograms with density overlays, and scatter plots. Variables too strongly correlated with FIP calculation were removed, and additional relevant metrics were added to improve predictive power.
+
+Hierarchical clustering was used to group pitchers based on six pitch usage rates. From the resulting dendrogram, pitchers were split into 10 clusters, with pitch arsenals assigned to each using a 5% usage threshold. PCA was used to further explore the variations of pitch styles and identity key dimensions that differentiate pitcher palettes.\
+
+For predictive modeling, a LASSO regression was trained on a 60/40 split of the training data with cross-validation. A Random Forest model was trained and tested on the same splits. Predictions from both models were then combined in a multiple linear regression ensemble and evaluated on both test sets to assess overall predictive accuracy. Two significant outliers were examined separately as case studies (in the Discussion section).
+
+# Results
+
+```{r include=FALSE}
+# summary statistics for train data
+summary(data$FIP)
+density_mode <- density(data$FIP)
+most_common_FIP <- density_mode$x[which.max(density_mode$y)]
+```
+
+```{r include=FALSE}
+# visualize FIP distribution of training set
+ggplot(data, aes(x = FIP)) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    fill = "skyblue", bins = 30, color = "white") +
+  geom_density(
+    color = "darkblue", 
+    size = 1.2, 
+    alpha = 0.7
+  ) +
+  labs(
+    title = "Distribution of FIP",
+    subtitle = "Histogram with density overlay",
+    x = "Fielding Independent Pitching (FIP) Score",
+    y = "Density") +
+  geom_vline(
+    aes(xintercept = most_common_FIP),
+    color = "red",
+    linewidth = 0.5)
+  theme_minimal()
+```
+
+```{r include=FALSE}
+# Compute correlation matrix
+num_data <- data %>%
+  filter(!is.na(FIP)) %>%
+  select(where(is.numeric))
+
+cor_mat <- cor(num_data, use = "complete.obs")
+
+# Convert matrix to long format for ggplot
+cor_df <- as.data.frame(as.table(cor_mat))
+
+# Create heatmap
+ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "red", mid = "white", high = "blue",
+                       midpoint = 0, limit = c(-1, 1), name = "Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(title = "Correlation Heatmap of Pitching Variables",
+       x = "", y = "")
+
+# strongest correlations from heatmap
+strong_cor <- cor_df %>%
+  filter(abs(Freq) > 0.7 & Var1 != Var2)
+```
+
+```{r include=FALSE}
+# TommyJohn surgery by FIP score
+ggplot(data = data, aes(x = factor(TommyJohn), y = FIP, fill = factor(TommyJohn))) +
+  geom_boxplot(alpha = 0.7, outlier.color = "red") +
+  labs(
+    title = "Tommy John Surgery by FIP Score",
+    x = "Tommy John Surgery",
+    y = "FIP"
+  ) +
+  scale_fill_manual(
+    values = c("0" = "steelblue", "1" = "orange"),
+    labels = c("No", "Yes")
+  ) +
+  scale_x_discrete(labels = c("0" = "No", "1" = "Yes")) +
+  theme_minimal()
+```
+
+```{r include=FALSE}
+# Fastball Velocity against FIP
+ggplot(data, aes(x = FBv, y = FIP)) +
+  geom_point(color = "red") +
+  geom_smooth(method = lm, formula = y ~ x) +
+  labs(x = "Fastball Velocity (MPH)", y = "FIP") +
+  ggtitle("Fastball Velocity vs. FIP")
+```
+
+```{r include=FALSE}
+# Fastball Usage against FIP
+ggplot(data, aes(x = FB, y = FIP)) +
+  geom_point(color = "red") +
+  geom_smooth(method = lm, formula = y ~ x) +
+  labs(x = "Fastball Usage (%)", y = "FIP") +
+  ggtitle("Fastball Usage vs. FIP")
+```
+
+```{r include=FALSE}
+# Stuff+ against FIP
+ggplot(data, aes(x = Stuff, y = FIP)) +
+  geom_point(color = "red") +
+  geom_smooth(method = lm, formula = y ~ x) +
+  labs(x = "Stuff+", y = "FIP") +
+  ggtitle("FIP vs. Stuff+")
+```
+
+```{r include=FALSE}
+# Fastball Usage against FIP
+ggplot(data, aes(x = FB)) +
+  geom_density(color = "red") +
+  labs(x = "Fastball Usage (%)", y = "Density") +
+  ggtitle("Fastball Usage")
+```
+
+### Exploratory Data Analysis
+
+Table 1 shows that hierarchical clustering did not suggest a strong correlation between pitch arsenal and FIP. Notably, pitchers with smaller pitch arsenals, such as those using only three unique pitches, tended to exhibit higher K/9 and BB/9 rates, and were more often relievers. This aligns with the expectation that relievers, facing fewer hitters and rarely encountering the same batter twice in one game, can achieve success with a less diverse pitch arsenal.
+
+```{r include=FALSE}
+# new dataset with only pitch usage rates and name for clustering
+pitch_mix <- data %>% select(Name, `FB`, `SL`, `CT`, `CB`, `CH`, `SF`, FIP)
+
+# calculating the distance matrix for hierarchical clustering
+pitch_diffs <- pitch_mix %>%
+  select(-FIP) %>% 
+  column_to_rownames(var = "Name") %>% 
+  dist()
+```
+
+```{r include=FALSE}
+# performing the clustering
+hclustpitch <- pitch_diffs %>% hclust()
+
+# plotting the dendrogram
+plot(hclustpitch, cex = 0.2)
+```
+
+```{r include=FALSE}
+# cutting at 10 clusters based on the visualization
+cut10 <- cutree(hclustpitch, k = 10)
+table(cut10)
+```
+
+```{r include=FALSE}
+# visualizing the dendrogram cut into 10 clusters
+dend <- as.dendrogram(hclustpitch)
+dendcolor <- color_branches(dend, k = 10)
+plot(dendcolor, main = "Colored branches", 
+     nodePar = list(lab.cex = 0.2, pch = NA))
+```
+
+```{r include=FALSE}
+# exploring characteristics of pitchers in clusters
+pitch_mix <- pitch_mix %>% mutate(clusterID = cut10)
+fip.table <- pitch_mix %>%
+  group_by(clusterID) %>% 
+  summarize(mn.fip = mean(FIP))
+
+# adding cluster as a variable to the dataset
+data <- data %>% mutate(Cluster = pitch_mix$clusterID)
+```
+
+| Cluster | Cluster Size | Pitch Arsenal | Mean FIP |
+|------------------|------------------|------------------|------------------|
+| 1 | `r table(cut10)[1]` | FB, SL, CH | `r round (fip.table$mn.fip[1], 2)` |
+| 2 | `r table(cut10)[2]` | FB, CT, CB, SL | `r round (fip.table$mn.fip[2], 2)` |
+| 3 | `r table(cut10)[3]` | FB, CB, CH | `r round (fip.table$mn.fip[3], 2)` |
+| 4 | `r table(cut10)[4]` | FB, CB, CT | `r round (fip.table$mn.fip[4], 2)` |
+| 5 | `r table(cut10)[5]` | FB, SL, CB, CH | `r round (fip.table$mn.fip[5], 2)` |
+| 6 | `r table(cut10)[6]` | FB, CH, SL, CB | `r round (fip.table$mn.fip[6], 2)` |
+| 7 | `r table(cut10)[7]` | FB, SF, SL | `r round (fip.table$mn.fip[7], 2)` |
+| 8 | `r table(cut10)[8]` | FB, SL, CT, CH, CB | `r round (fip.table$mn.fip[8], 2)` |
+| 9 | `r table(cut10)[9]` | CT, SL, CB, FB, CH | `r round (fip.table$mn.fip[9], 2)` |
+| 10 | `r table(cut10)[10]` | FB, SL | `r round (fip.table$mn.fip[10], 2)` |
+
+: Cluster Pitch Arsenal Performance Comparison
+
+PCA also revealed meaningful insights to pitcher arsenals. The first three components capture the majority of variation, explaining 65% of the total variance (PC1: 28%, PC2: 20%, PC3: 17%). For clearer interpretation of pitcher clusters and pitch-type vectors, a two-dimensional biplot is shown below. PC1 appears to separate pitchers with high fastball and slider usage against those emphasizing cutters and curveballs, representing power versus breaking ball. PC2 differentiates pitchers relying on splitters versus changeups, highlighting off-speed tradeoffs. PC3 relies on cutters and sliders, capturing secondary pitch usages. The moderate loadings of FIP across multiple PCs suggest that performance is influenced by combinations of pitch types rather than a single dominant pitch.
+
+```{r include=FALSE}
+# creating a cluster performance table to analyse our clusters
+cluster_performance <- data %>% 
+  group_by(Cluster) %>% 
+  summarize(`K/9` = round(mean(`K/9`), 2),
+            `BB/9` = round(mean(`BB/9`), 2),
+            Location = round(mean(Location), 0),
+            HardHit = round(mean(HardHit), 3),
+            OSwing = round(mean(OSwing), 3),
+            FBVelo = round(mean(FBv), 1),
+            Pct.Starter = round(mean(Position), 3),
+            Pct.Righty = round(mean(Throws), 3))
+cluster_performance %>% gt(caption = "Cluster Performance")
+```
+
+```{r include=FALSE}
+# PCA biplot of pitch mixes using 10 clusters
+clustlr <- lm(FIP ~ Cluster, data = data)
+
+summary(clustlr)
+
+ggplot(data, aes(x = Cluster, y = FIP)) +
+  geom_point(color = "red") +
+  geom_smooth(method = lm, formula = y ~ x) +
+  labs(x = "Cluster", y = "FIP") +
+  ggtitle("FIP by Cluster")
+```
+
+```{r include=FALSE}
+# select pitch usage variables
+pitch_data <- data %>%
+  ungroup() %>%
+  select("FB", "SL", "CT", "CB", "CH", "SF", "FIP")
+
+# perform PCA
+pca.out <- prcomp(pitch_data, scale=TRUE)
+```
+
+```{r include=FALSE}
+# center: means of variables prior to scaling
+pca.out$center
+
+# scale: standard deviations of variables prior to scaling
+pca.out$scale
+
+# Loadings
+# rotation: principal component loadings
+pca.out$rotation
+```
+
+```{r include=FALSE}
+# PCA scores (player coordinates)
+pca_scores <- as.data.frame(pca.out$x[, 1:2])
+pca_scores$Name <- rownames(pca_scores)
+pca_scores$clusterID <- pitch_mix$clusterID
+
+# PCA loadings (pitch vectors)
+pca_loadings <- as.data.frame(pca.out$rotation[, 1:2])
+pca_loadings$Pitch <- rownames(pca_loadings)
+
+# Scale loadings for visibility
+loading_factor <- 3
+pca_loadings$PC1 <- pca_loadings$PC1 * loading_factor
+pca_loadings$PC2 <- pca_loadings$PC2 * loading_factor
+```
+
+```{r echo=FALSE}
+# create biplot of first two PCs, better for visualization
+ggplot() +
+  # Players as points, colored by clusterID
+  geom_point(data = pca_scores, 
+             aes(x = PC1, y = PC2, color = as.factor(clusterID)),
+             size = 2, alpha = 0.7) +
+
+  # Pitch arrows
+  geom_segment(data = pca_loadings,
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")),
+               color = "red") +
+  
+  # Pitch labels
+  geom_text_repel(data = pca_loadings,
+                  aes(x = PC1, y = PC2, label = Pitch),
+                  color = "red", size = 4) +
+  
+  labs(title = "Figure 1: PCA Biplot of Pitch Mixes",
+       x = "PC1", y = "PC2",
+       color = "Cluster") +  # Legend title
+  theme_minimal() +
+  scale_color_brewer(palette = "Set3")
+```
+
+```{r include=FALSE}
+# check the summary of our PCA to create scree plot
+summary(pca.out) 
+```
+
+```{r include=FALSE}
+# extract the proportion variance explained to make scree plot
+pve <- summary(pca.out)[["importance"]]["Proportion of Variance",]
+pve 
+```
+
+```{r include=FALSE}
+# plot of proportion of variance explained with PCs
+plot(1:length(pve), pve, ylim = c(0,1), xlab = "PC", 
+     ylab = "Prop Variance Explained", type = "b", pch = 20)
+```
+
+```{r include=FALSE}
+# cumulative proportions of variance explained with PCs
+cumpve <- summary(pca.out)[["importance"]]["Cumulative Proportion",]
+cumpve
+```
+
+```{r include=FALSE}
+# plot of cumulative proportions of variance explained with PCs
+plot(1:length(cumpve), cumpve, ylim = c(0,1), xlab = "PC", 
+     ylab = "Cum Prop Variance Explained", type = "b", pch = 20)
+```
+
+### Predictive Models
+
+```{r include=FALSE}
+# random forest first pass with removing NA variables and those related to FIP
+set.seed(42)
+
+# creating 60/40 training and test set
+n <- nrow(data)
+trainIDs <- sample(x = 1:n, size = n/(5/3))
+train <- data[trainIDs,]
+test <- data[-trainIDs,]
+
+# removing variables due to NAs and collinearity
+train <- train %>% select(-wSL, -wCB, -wCH, -"K/9", -"BB/9", -"HR/9", -ERA, -SIERA, -Name, -Cluster)
+
+test <- test %>% select(-wSL, -wCB, -wCH, -"K/9", -"BB/9", -"HR/9", -ERA, -SIERA, -Name, -Cluster)
+
+# creating random forest model
+rf.pitchers <- randomForest(FIP ~., data = train, mtry = 10, importance = TRUE)
+
+# calculating MSE
+yhat.rf <- predict(rf.pitchers, newdata = test)
+error.rf <- mean((yhat.rf - test$FIP)^2)
+
+# predicting values for our ensemble method later
+ensemble.rf <- predict(rf.pitchers, newdata = data)
+```
+
+```{r include=FALSE}
+# LASSO Regression Models
+data_clean <- data %>% select(-wSL, -wCB, -wCH, -"K/9", -"BB/9", -"HR/9", -ERA, -SIERA, -FIP, -Name, -Cluster) %>% as.matrix()
+
+# clean test data
+test2025_clean <- test2025 %>% select(-wSL, -wCB, -wCH, -"K/9", -"BB/9", -"HR/9", -ERA, -SIERA, -Name) %>% na.omit()
+
+# Remove response variable (FIP) from predictors
+# train data
+X_train <- train %>%
+  select(-FIP) %>%
+  as.matrix()
+y_train <- train$FIP
+
+# test data
+X_test <- test %>%
+  select(-FIP) %>%
+  as.matrix()
+y_test <- test$FIP
+
+# set the seed
+set.seed(42)
+# perform LASSO
+lasso_model <- cv.glmnet(
+  X_train, y_train,
+  alpha = 1,    # LASSO
+  nfolds = 10   # 10-fold CV
+)
+
+# using CV to find the best lambda
+cv.out.lasso <- cv.glmnet(X_train, y_train, alpha = 1)
+# set alpha=1 to get lasso
+bestlam.lasso <- cv.out.lasso$lambda.min
+
+# fit LASSO using the best lambda value and the training set
+# get predictions on the test set
+lasso.pred <- predict(cv.out.lasso, s = bestlam.lasso, newx = X_test)
+# calculate test MSE
+mse.lasso <- mean((y_test - lasso.pred)^2)
+lasso.coefs <- coef(cv.out.lasso, s=bestlam.lasso)
+
+lasso_model$lambda.min   # lambda with minimum CV error
+lasso_model$lambda.1se   # simpler model within 1 SE
+
+# for better interpretability, find RMSE
+rmse.lasso <- sqrt(mse.lasso)
+
+# R-squared
+sst.lasso <- sum((y_test - mean(y_test))^2)
+sse.lasso <- sum((y_test - lasso.pred)^2)
+r2.lasso <- 1 - sse.lasso/sst.lasso
+
+# adjusted r-squared
+n.lasso <- nrow(X_test)       # number of samples
+p.lasso <- sum(lasso.coefs != 0) - 1  # number of predictors used
+adj_r2.lasso <- 1 - (1 - r2.lasso) * (n.lasso - 1) / (n.lasso - p.lasso - 1)
+
+ensemble.lasso <- predict(lasso_model, newx = data_clean, s = "lambda.min")
+```
+
+```{r include=FALSE}
+# plot of predicted vs actual FIP scores from LASSO predictions
+plot(y_test, lasso.pred, xlab = "Actual FIP", ylab = "Predicted FIP", main = "Predicted vs Actual")
+abline(0, 1, col = "red")  # perfect prediction line
+```
+
+```{r include=FALSE}
+# test LASSO on full dataset
+y_full <- data$FIP
+pred_full <- predict(lasso_model, newx = data_clean, s = "lambda.min")  
+data_with_preds <- data %>%
+  mutate(predicted_FIP = as.vector(pred_full))
+
+# extract data about Chase Anderson
+chase_data <- data_with_preds[data_with_preds$Name == "Chase Anderson", ]
+
+data_with_preds <- data_with_preds %>%
+  mutate(residual = FIP - predicted_FIP)
+# error scores for LASSO on full dataset
+rmse_full_lasso <- sqrt(mean(data_with_preds$residual^2))
+
+# Rˆ2 value
+SST <- sum((data_with_preds$FIP - mean(data_with_preds$FIP))^2)
+SSE <- sum(data_with_preds$residual^2)
+R2 <- 1 - SSE/SST # computed on the same training data, which explains the overly optimistic R^2 value.
+```
+
+```{r include=FALSE}
+# LASSO coefficients for each variable
+coef_df <- data.frame(
+  Feature = rownames(lasso.coefs),
+  Coefficient = as.numeric(lasso.coefs)
+)
+coef_df <- coef_df[coef_df$Coefficient != 0, ]  # keep only non-zero
+```
+
+```{r include=FALSE}
+# creating a new dataset with values to make our ensemble model
+ensemble <- data %>% 
+  mutate(rfpred = round(ensemble.rf, 2), 
+         lassopred = round(ensemble.lasso, 2)) %>% 
+  select(Name, rfpred, lassopred, FIP)
+```
+
+```{r include=FALSE}
+# multiple linear regression using predictions from LASSO and random forest models ensembled
+mlr <- lm(FIP ~ rfpred + lassopred, data = ensemble)
+
+mlr_coefs <- coef(mlr)
+
+ensemble <- ensemble %>% mutate(
+  pred = round(mlr_coefs[1] + (mlr_coefs[2] * FIP) + (mlr_coefs[3] * FIP), 2)
+)
+
+ensemble.pred <- (mlr_coefs[1] + (mlr_coefs[2] * test$FIP) +
+                    (mlr_coefs[3] * test$FIP))
+
+# calculating the MSE of our ensemble method
+mse.ensemble <- mean((test$FIP - ensemble.pred)^2)
+```
+
+```{r include=FALSE}
+# plots to visualize the predictive accuracy of our models
+ggplot(ensemble, aes(x = FIP, y = pred)) +
+  geom_point(color = "orange") +
+  geom_abline(intercept = 0, slope = 1, col = "blue")
+
+ggplot(ensemble, aes(x = FIP, y = rfpred)) +
+  geom_point(color = "orange") +
+  geom_abline(intercept = 0, slope = 1, col = "blue")
+
+ggplot(ensemble, aes(x = FIP, y = lassopred)) +
+  geom_point(color = "orange") +
+  geom_abline(intercept = 0, slope = 1, col = "blue")
+
+# residual plot for our ensemble model
+model_data <- augment(mlr)
+ggplot(model_data, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red")
+```
+
+```{r include=FALSE}
+# running LASSO on our 2025 separate test set
+X_test_2025 <- test2025_clean %>% select(-FIP) %>%  as.matrix()
+y_test_2025 <- test2025_clean$FIP
+lasso.pred.2025 <- predict(cv.out.lasso, s = bestlam.lasso, newx = X_test_2025)
+# calculating LASSO MSE on the separate test set
+mse.lasso.2025 <- mean((y_test_2025 - lasso.pred.2025)^2)
+
+# calculating random forest MSE on the separate test set
+yhat.rf.2025 <- predict(rf.pitchers, newdata = test2025_clean)
+error.rf.2025 <- mean((yhat.rf.2025 - test2025_clean$FIP)^2)
+
+# running ensemble and calculating test MSE on the separate test set
+ensemble.pred.2025 <- (mlr_coefs[1] + 
+                    (mlr_coefs[2] * test2025$FIP) +
+                    (mlr_coefs[3] * test2025$FIP))
+mse.ensemble.2025 <- mean((test2025$FIP - 
+                             ensemble.pred.2025)^2)
+```
+
+Table 2 shows that the ensemble model achieved the lowest test mean squared errors (MSE) on both the validation set and the 2025 test set, demonstrating exceptional predictive accuracy. While LASSO outperformed Random Forest on both test sets, it did not match the ensemble’s performance. All models exhibited higher errors on the 2025 test set compared to the validation set.
+
+| Model         | Test MSE 60/40 Split       | Test MSE on 2025 Data           |
+|-------------------|-------------------------|----------------------------|
+| Lasso         | `r round(mse.lasso, 4)`    | `r round(mse.lasso.2025, 4)`    |
+| Random Forest | `r round(error.rf, 4)`     | `r round(error.rf.2025, 4)`     |
+| Ensemble      | `r round(mse.ensemble, 4)` | `r round(mse.ensemble.2025, 4)` |
+
+: Model Performance
+
+The LASSO model demonstrated strong predictive performance by shrinking many coefficients toward zero, effectively performing feature selection. On the validation set, the model achieved an MSE of 0.015 and an adjusted R\^2 of 0.953, indicating that it explained over 95% of the variance in FIP. The optimal lambda chosen via 10-fold cross-validation was 9\* 10\^-4. From Figure 1, AVG, WHIP, K-BB%, and BABIP were retained with non-zero coefficients, highlighting their importance in predicting pitcher performance. On the 2025 test set, the model achieved an MSE of 0.049 and explained 92% of the variance in FIP, showing a slight decline in predictive accuracy on new data.
+
+```{r echo=FALSE}
+# plot of our LASS0 selected features
+barplot(coef_df$Coefficient, names.arg = coef_df$Feature, las = 2, main = "Figure 2: Selected Features (LASSO)")
+```
+
+The Random Forest model performed the worst among the three models, with a MSE of 0.1032 on the validation set and 0.2776 on the 2025 test set. However, the success of the ensemble model indicates that Random Forest captures aspects of the dataset that LASSO does not. In particular, variables such as WAR, wFB, G, and Stuff+ were identified as important by the Random Forest model while being shrunk to zero in LASSO. This is shown in Figure 2. The ensemble model’s improved accuracy indicates that the Random Forest contributions enhanced the final predictions. Finally, K-BB%, WHIP, and BABIP were selected in both as significant predictors, and all pitch usage statistics were not significant predictors.
+
+```{r echo=FALSE}
+# plot of our random forest variable importance
+varImpPlot(rf.pitchers, cex = 0.48, main = "Figure 3: Random Forest Variable Importance")
+```
+
+# Discussion
+
+Two advanced sabermetrics, wFB and Stuff+, emerged as notable predictors in the Random Forest model. wFB evaluates each fastball based on its outcome, including how it affects the count or whether it results in a hit. \[3\] Pitchers with more effective fastballs generally perform better, yet overall fastball usage did not appear as predictive. Stuff+ measures only the physical characteristics of a pitch, such as spin rate and horizontal break, without considering outcomes. Despite no collinearity with FIP, Stuff+ still contributed significantly to predicting FIP scores.
+
+LASSO provided a simpler and more interpretable model by retaining only the strongest predictors. Batting Average on Balls In Play (BABIP) appeared to have an unusually strong negative correlation with FIP; for every one-unit increase in FIP, BABIP is expected to decrease by over 30 units, assuming all other variables in the model are held constant. BABIP measures a pitcher’s ability to prevent batters reaching base only on batted balls put into the field of play. \[4\] This is calculated with all of the types of hits that a player can produce, excluding homeruns and bunts. Thus, pitchers who give up barrels and walks are not penalized on their FIP scores as heavily so they might have lower BABIP scores, despite a high FIP score due to the combination of walks (BB) and homeruns (HR) in its calculation. Moreover, good pitchers in our dataset might also be generating many fly balls, which would give a lower BABIP but higher FIP, since the likelihood of a HR increases when more fly balls are hit. We believe BABIP could also have this negative coefficient to help correct noise or patterns in the residuals of other variables.
+
+Hierarchical clustering did not reveal a strong relationship between pitch arsenal diversity and FIP score. Clusters 1 and 7 stood out for having low FIP scores despite limited pitch arsenals, each with only three pitch styles and a higher proportion of relievers. Additionally, these clusters exhibited higher K/9 and BB/9 rates, consistent with the role of a “closer”. Closers are relief pitchers who finish games in the final innings, hence they tend to throw a limited set of high-quality pitchers, aiming to strike out batters at higher rates. The main takeaway from our clusters is that relief pitchers can succeed with less diverse pitch arsenals, likely as a result of facing lower numbers of hitters in an appearance.
+
+PCA suggested that pitcher performance depends on the combination of pitches rather than any single dominant pitch. FIP loadings spread across multiple components indicated that effectiveness arises from balanced pitch mixes. These findings align with the clustering analysis, specifically where relievers achieved low FIP with fewer pitches, emphasizing efficiency and specialized roles.
+
+### Case Studies: Interesting Players
+
+An analysis of LASSO standardized residuals identified Chase Anderson as an outlier, being more than three standard deviations from the mean. With the highest FIP score in our dataset (5.62), and one of the older players (average age of 35), Anderson played across 5 teams in 2022-2024 and threw four pitches. Although his BABIP (0.267), WHIP (1.37), and K-BB% (0.082) appeared relatively normal, these metrics failed to capture his collapse in effectiveness over time. He allowed an unusually high number of home runs relative to walks and strikeouts, which FIP heavily penalizes. Not only does this highlight the role of age in pitching, but it demonstrates how metrics that focus on balls in play or strikeout/walk ratios can be misleading. With four pitches in his arsenal, his collapse shows that execution of these pitches (such as the metric Stuff+) are equally important in determining a player’s success.
+
+In hierarchical clustering, Tim Hill was unique, forming a cluster by himself. His extreme 90.2% fastball usage, 6.3% occasional slider usage, and near-zero cutter usage stood out as significantly different than any other pitcher in our dataset. His uncommon pitching strategy, combined with his low fastball velocity, led to poor performance as he suffered from an above average Hard-Hit% and high BABIP, as well as the lowest K/9 in our dataset. This case illustrates that unusual pitching strategies or extreme usage patterns can produce atypical outcomes, even with predictive models.
+
+# Limitations and Future Research
+
+Our training set was relatively small, with approximately 300 pitchers, and while we did not include variables directly used to calculate FIP, several predictors collinear with FIP (i.e. K-BB%, WHIP, and IP) were included. For our primary research question on predictive power, collinearity was not a concern. However, future models should incorporate additional metrics that capture the same influence as homeruns, such as FlyBall%, or pitcher-specific characteristics like Whiff%, to potentially improve accuracy.
+
+Expanding the dataset to include more historical season data could also improve predictive performance. Additionally, not all pitchers from 2022-2024 were represented in 2025 due to our 50-inning threshold, which may limit generalizability.
+
+The case study of Chase Anderson further suggests that including Age as a predictor could improve the model, as it is historically proven that pitching effectiveness declines over time. However, selection bias could influence the effects of Age on pitcher success, since ineffective pitchers will be phased out of the league earlier in their careers. In a subsequent study, PC scores taken from PCA could also be used to build a predictive model on different pitch styles.
+
+# Conclusion
+
+Our study tested the hypothesis that sabermetrics provide greater predictive value than traditional statistics for pitcher performance. Using ensemble machine learning models trained on three years of data, we achieved strong predictive accuracy, with our model producing an RMSE of 0.0301 when predicting 2025 FIP scores. This error is small enough to be practically negligible.
+
+Clustering and PCA further revealed that pitcher success is driven by combinations of pitches rather than any single pitch type, highlighting the nuances of effective pitching strategies. Overall, our results demonstrate that advanced metrics, combined with ML, can provide meaningful insights into pitcher performance and offer a reliable framework for predicting future success. 
+
+These findings highlight the potential of data-driven approaches in baseball analytics and suggest that continued integration of sabermetrics and ML can help improve strategic player decision-making and give us a better understanding of the game.
+
+# References
+
+\[1\] Richards, Dan. The Relative Value of FIP, xFIP, SIERA, and xERA Pt. II. PitcherList, 9 Apr. 2020.[ ](https://pitcherlist.com/the-relative-value-of-fip-xfip-siera-and-xera-pt-ii/?utm_source=chatgpt.com)Last accessed 9 Dec. 2025. <https://pitcherlist.com/the-relative-value-of-fip-xfip-siera-and-xera-pt-ii/>.
+
+\[2\] “Fielding Independent Pitching (FIP).” Baseball-Reference Glossary.[ ](https://www.mlb.com/glossary/advanced-stats/expected-fielding-independent-pitching/?utm_source=chatgpt.com)Last accessed 9 Dec. 2025. <https://www.baseball-reference.com/glossary/fielding-independent-pitching-fip/#:~:text=What%20is%20Fielding%20Independent%20Pitching,a%20similar%20scale%20to%20ERA>.
+
+\[3\] “Pitch-Type Linear Weights.” Sabermetrics Library, FanGraphs.[ ](https://library.fangraphs.com/offense/pitch-type-linear-weights/)Last accessed 9 Dec. 2025. <https://library.fangraphs.com/offense/pitch-type-linear-weights/>.
+
+\[4\] Cockcroft, Tristan H. “Understanding Nuances of BABIP to Help Your Fantasy Draft Preparation.” ESPN Fantasy Baseball, 22 Feb. 2013. Last accessed 9 Dec. 2025. <https://www.espn.com/fantasy/baseball/story/_/page/mlbdk2k13_babip/understanding-nuances-babip-help-your-fantasy-draft-preparation>.
+
+\[5\] Referenced code chunks from Professor Ming-Wen An’s labs.
+
+\[6\] R for Data Science (2nd ed.). “Data visualization”. Last accessed 9 Dec. 2025. <https://r4ds.hadley.nz/data-visualize.html>.\
+\[7\] Scherer, Cédric. “A ggplot2 Tutorial for Beautiful Plotting in R”, 5 Aug. 2019. Last accessed 9 Dec. 2025.   <https://www.cedricscherer.com/2019/08/05/a-ggplot2-tutorial-for-beautiful-plotting-in-r/>.
+
+# Code Book
+
+**Name** - Name of pitcher
+
+**TommyJohn** - Indicator of having had Tommy John rehabilitation surgery throughout baseball career (Yes = 1, No = 0)
+
+**NumberOfTeams** - Number of teams that a pitcher has played for during the 2022-2024 seasons
+
+**Age** - Age of pitcher
+
+**K/9** (Strikeouts per 9 innings) - Average number of strikeouts per 9 innings
+
+**BB/9** (Walks per 9 innings) - Average number of walks per 9 innings
+
+**HR/9** (Home Runs per 9 innings) - Average number of home runs allowed per 9 innings.
+
+**AVG** - The rate that hitters record hits against pitcher (Hits/At-Bats)
+
+**WHIP** (Walks Plus Hits per Inning Pitched) - The average number of base runners allowed via hit or walk per inning.
+
+**FIP** (Fielding Independent Pitching) - An estimate of a pitcher’s ERA based on strikeouts, walks/HBP, and home runs allowed, assuming league average results on balls in play.
+
+**KBB** (K%-BB%) (Strikeout Percentage minus Walk Percentage) - The percentage differential between K% and BB%, often a better indicator of performance than K/BB, which can be skewed by very low walk rates.
+
+**LOB** (LOB%) (Left On-Base Percentage) - Percentage of pitcher’s own base runners that they strand over the course of a season. Not equal to the LOB column in the box score.
+
+**BABIP** (Batting Average on Balls in Play) - The rate at which the pitcher allows a hit when the ball is put in play, calculated as (H-HR)/(AB-K-HR+SF).
+
+**W** (Wins) - Number of wins.
+
+**WAR** (Wins Above Replacement -  A comprehensive statistic that estimates the number of wins a player has been worth to his team compared to a freely available player such as a minor league free agent based on his FIP.
+
+**ERA** (Earned Run Average) -  The average number of earned runs a pitcher allows per 9 innings. ((ER\*9)/IP)
+
+**G** (Games) - Number of games in which the pitcher appeared.
+
+**GS** (Games Started) - Number of games the pitcher started.
+
+**SIERA** (Skill Interactive ERA) -  An ERA estimator that attempts to more accurately capture a pitcher’s performance based on strikeouts, walks/HBP, home runs, and batted ball data.
+
+**Throws** - Indicator or left or right-handed pitcher (Right = 1, Left = 0)
+
+**IP** (Innings Pitched) - Number of total innings pitched (.1 represents 1/3 of an inning, .2 represents 2/3 of an inning).
+
+**OSwing** (O-Swing%) (Outside the Zone Swing Percentage) - Swings at pitches outside the zone divided by pitches outside the zone.
+
+**FB** - Fastball Percentage
+
+**FBv** - Average fastball velocity
+
+**SL** - Slider Percentage
+
+**CT** - Cutter Percentage
+
+**CB** - Curveball Percentage
+
+**CH** - Changeup Percentage
+
+**SF** - Split-Finger Percentage
+
+**Stuff** (Stuff+) - Looks only at the physical characteristics of a pitch. Important features include, but are not limited to, release point, velocity, vertical and horizontal movement, and spin rate
+
+**Location** (Location+) - A count- and pitch type-adjusted judge of a pitcher’s ability to put pitches in the right place. No velocity, movement, or any other physical characteristics are included in the statistic.
+
+**Position** - Indicator of type of pitcher (Starter = 1, Reliever = 0), calculated by the amount of games started divided by the total number of games played. If the ratio is greater or equal to 0.5, then the pitcher is classified as a starter.
+
+**pitch_count** - Number of different pitches in a pitcher's arsenal. Pitch usage rates greater than 5% are added together to determine the total number of pitches in their arsenal.
